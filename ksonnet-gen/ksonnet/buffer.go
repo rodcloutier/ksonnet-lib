@@ -33,12 +33,23 @@ func newIndentWriter() *indentWriter {
 }
 
 func (m *indentWriter) writeLine(text string) {
+	m.bufferWriteLine(&m.buffer, text)
+}
+
+func (m *indentWriter) bufferWriteLine(buffer *bytes.Buffer, text string) {
 	if m.err != nil {
 		return
 	}
 	prefix := strings.Repeat("  ", m.depth)
 	line := fmt.Sprintf("%s%s\n", prefix, text)
-	_, m.err = m.buffer.WriteString(line)
+	_, m.err = buffer.WriteString(line)
+}
+
+func (m *indentWriter) write(buffer bytes.Buffer) {
+	if m.err != nil {
+		return
+	}
+	_, m.err = m.buffer.Write(buffer.Bytes())
 }
 
 func (m *indentWriter) bytes() ([]byte, error) {
