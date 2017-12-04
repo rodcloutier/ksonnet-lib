@@ -411,14 +411,14 @@ func (vas versionedAPISet) toSortedSlice() versionedAPISlice {
 //-----------------------------------------------------------------------------
 
 type constructor struct {
-	specName kubespec.PropertyName
+	specName       kubespec.PropertyName
+	defaultSetters []string
+	params         []kubeversion.CustomConstructorParam
+	apiObj         *apiObject
 }
 
-func newConstructor(id string, params []kubeversion.CustomConstructorParam) *constructor {
-
-	return &constructor{
-		specName: kubespec.PropertyName(id),
-	}
+func (c *constructor) accept(visitor Visitor) {
+	visitor.visitConstructor(c)
 }
 
 //-----------------------------------------------------------------------------
@@ -433,12 +433,13 @@ func newConstructor(id string, params []kubeversion.CustomConstructorParam) *con
 // formulate the basis of much of ksonnet-lib's programming surface.
 // The logic for creating them is handled largely by `root`.
 type apiObject struct {
-	name       kubespec.ObjectKind // e.g., `Container` in `v1.Container`
-	properties propertySet         // e.g., container.image, container.env
-	parsedName *kubespec.ParsedDefinitionName
-	comments   comments
-	parent     *versionedAPI
-	isTopLevel bool
+	name         kubespec.ObjectKind // e.g., `Container` in `v1.Container`
+	properties   propertySet         // e.g., container.image, container.env
+	parsedName   *kubespec.ParsedDefinitionName
+	comments     comments
+	parent       *versionedAPI
+	isTopLevel   bool
+	constructors []*constructor
 }
 type apiObjectSet map[kubespec.ObjectKind]*apiObject
 type apiObjectSlice []*apiObject
@@ -450,12 +451,13 @@ func newAPIObject(
 	isTopLevel := len(def.TopLevelSpecs) > 0
 	comments := newComments(def.Description)
 	return &apiObject{
-		name:       name.Kind,
-		parsedName: name,
-		properties: make(propertySet),
-		comments:   comments,
-		parent:     parent,
-		isTopLevel: isTopLevel,
+		name:         name.Kind,
+		parsedName:   name,
+		properties:   make(propertySet),
+		comments:     comments,
+		parent:       parent,
+		isTopLevel:   isTopLevel,
+		constructors: []*constructor{},
 	}
 }
 
@@ -481,7 +483,47 @@ func (ao *apiObject) accept(visitor Visitor) {
 
 	ao.comments.accept(visitor)
 
-	// TODO [rod] emitConstructors
+	k8sVersion := ao.root().spec.Info.Version
+	path := ao.parsedName.Unparse()
+
+	createConstructor := func(id string, params []kubeversion.CustomConstructorParam) *constructor {
+		// Panic if a function with the constructor's name already exists.
+		specName := kubespec.PropertyName(id)
+		if dm, ok := ao.properties[specName]; ok {
+			log.Panicf(
+				"Attempted to create constructor, but '%s' property already existed at '%s'",
+				specName, dm.path)
+		}
+
+		// Default body of the constructor. Usually either `apiVersion +
+		// kind` or `{}`.
+		var defaultSetters []string
+		if ao.isTopLevel {
+			defaultSetters = specialPropertiesList
+		} else {
+			defaultSetters = []string{"{}"}
+		}
+
+		return &constructor{
+			specName:       specName,
+			defaultSetters: defaultSetters,
+			params:         params,
+			apiObj:         ao,
+		}
+	}
+
+	specs, ok := kubeversion.ConstructorSpec(k8sVersion, path)
+	if ok {
+		for _, spec := range specs {
+			constructor := createConstructor(spec.ID, spec.Params)
+			ao.constructors = append(ao.constructors, constructor)
+			constructor.accept(visitor)
+		}
+	} else {
+		constructor := createConstructor(constructorName, []kubeversion.CustomConstructorParam{})
+		ao.constructors = append(ao.constructors, constructor)
+		constructor.accept(visitor)
+	}
 
 	for _, pm := range ao.properties.sortAndFilterBlacklisted() {
 		pm.accept(visitor)

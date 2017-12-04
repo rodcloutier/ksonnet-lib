@@ -20,6 +20,7 @@ type Visitor interface {
 	visitAPIObject(ao *apiObject)
 	visitRefMixinAPIObject(rmao *refMixinAPIObject)
 
+	visitConstructor(c *constructor)
 	visitProperty(p *property)
 	visitTypeAlias(p *property)
 	visitRefProperty(p *property)
@@ -144,6 +145,10 @@ func (e *emitVisitor) visitAPIObject(ao *apiObject) {
 		e.m.bufferWriteLine(&buffer, fmt.Sprintf("local kind = {kind: \"%s\"},", ao.name))
 	}
 
+	for _, constructor := range ao.constructors {
+		buffer.Write(e.buffers[constructor].Bytes())
+	}
+
 	for _, pm := range ao.properties.sortAndFilterBlacklisted() {
 		if isSpecialProperty(pm.name) || isMixinRef(pm.ref) {
 			continue
@@ -223,10 +228,59 @@ func (e *emitVisitor) visitRefMixinAPIObject(rmao *refMixinAPIObject) {
 	e.m.bufferWriteLine(&buffer, "},")
 }
 
+func (e *emitVisitor) visitConstructor(c *constructor) {
+	// Build parameters and body of constructor. Considering the example
+	// of the constructor of `v1.Container`:
+	//
+	//   new(name, image):: self.name(name) + self.image(image),
+	//
+	// Here we want to (1) assemble the parameter list (i.e., `name` and
+	// `image`), as well as the body (i.e., the calls to `self.name` and
+	// so on).
+	paramLiterals := []string{}
+	setters := c.defaultSetters
+	for _, param := range c.params {
+		// Add the param to the param list, including default value if
+		// applicable.
+		if param.DefaultValue != nil {
+			paramLiterals = append(
+				paramLiterals, fmt.Sprintf("%s=%s", param.ID, *param.DefaultValue))
+		} else {
+			paramLiterals = append(paramLiterals, param.ID)
+		}
+
+		// Add an element to the body (e.g., `self.name` above).
+		if param.RelativePath == nil {
+			prop, ok := c.apiObj.properties[kubespec.PropertyName(param.ID)]
+			if !ok {
+				log.Panicf(
+					"Attempted to create constructor, but property '%s' does not exist",
+					param.ID)
+			}
+			k8sVersion := c.apiObj.root().spec.Info.Version
+			propMethodName := jsonnet.RewriteAsIdentifier(k8sVersion, prop.name).ToSetterID()
+			setters = append(
+				setters, fmt.Sprintf("self.%s(%s)", propMethodName, param.ID))
+		} else {
+			// TODO(hausdorff): We may want to verify this relative path
+			// exists.
+			setters = append(
+				setters, fmt.Sprintf("self.%s(%s)", *param.RelativePath, param.ID))
+		}
+	}
+
+	// Write out constructor.
+	paramsText := strings.Join(paramLiterals, ", ")
+	bodyText := strings.Join(setters, " + ")
+	buffer := bytes.Buffer{}
+	e.buffers[c] = &buffer
+	e.m.bufferWriteLine(&buffer, fmt.Sprintf("%s(%s):: %s,", c.specName, paramsText, bodyText))
+}
+
 func (e *emitVisitor) visitProperty(p *property) {
 
-	//buffer := bytes.Buffer{}
-	//e.buffers[p] = &buffer
+	buffer := bytes.Buffer{}
+	e.buffers[p] = &buffer
 
 	//paramType := *p.schemaType
 
