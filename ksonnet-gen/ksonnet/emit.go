@@ -526,7 +526,7 @@ func (ao *apiObject) accept(visitor Visitor) {
 	}
 
 	for _, pm := range ao.properties.sortAndFilterBlacklisted() {
-		pm.accept(visitor)
+		pm.accept(visitor, nil)
 	}
 
 	visitor.visitAPIObject(ao)
@@ -739,21 +739,24 @@ func (aos apiObjectSet) toSortedSlice() apiObjectSlice {
 
 type refMixinAPIObject struct {
 	apiObject
-	prop            *property
-	parentMixinName string
+	prop *property
 }
 
-func (rmao *refMixinAPIObject) accept(visitor Visitor) {
+func (rmao *refMixinAPIObject) accept(visitor Visitor, parentMixinName *string) {
+
+	k8sVersion := rmao.root().spec.Info.Version
+	functionName := jsonnet.RewriteAsIdentifier(k8sVersion, rmao.prop.name)
+	mixinName := fmt.Sprintf("__%sMixin", functionName)
 
 	for _, pm := range rmao.properties.sortAndFilterBlacklisted() {
 		if isSpecialProperty(pm.name) {
 			continue
 		}
-		pm.parentMixinName = rmao.parentMixinName
-		pm.accept(visitor)
+
+		pm.accept(visitor, &mixinName)
 	}
 
-	visitor.visitRefMixinAPIObject(rmao)
+	visitor.visitRefMixinAPIObject(rmao, parentMixinName)
 }
 
 //-----------------------------------------------------------------------------
@@ -792,8 +795,6 @@ type property struct {
 	path       kubespec.DefinitionName
 	comments   comments
 	parent     *apiObject
-
-	parentMixinName string // visit context variable
 }
 type propertySet map[kubespec.PropertyName]*property
 type propertySlice []*property
@@ -836,7 +837,7 @@ func (p *property) root() *root {
 	return p.parent.parent.parent.parent
 }
 
-func (p *property) accept(visitor Visitor) {
+func (p *property) accept(visitor Visitor, parentMixinName *string) {
 
 	if p.kind == typeAlias {
 		visitor.visitTypeAlias(p)
@@ -853,16 +854,16 @@ func (p *property) accept(visitor Visitor) {
 			apiObject: *apiObject,
 			prop:      p,
 		}
-		rmao.accept(visitor)
+		rmao.accept(visitor, parentMixinName)
 		return
 	} else if p.ref != nil && !isMixinRef(p.ref) {
-		visitor.visitRefProperty(p)
+		visitor.visitRefProperty(p, parentMixinName)
 		return
 	} else if p.schemaType == nil {
 		log.Panicf("Neither a type nor a ref")
 	}
 
-	visitor.visitProperty(p)
+	visitor.visitProperty(p, parentMixinName)
 }
 
 func (p *property) emit(m *indentWriter) {

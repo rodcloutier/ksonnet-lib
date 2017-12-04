@@ -18,12 +18,12 @@ type Visitor interface {
 	visitComments(cs *comments)
 
 	visitAPIObject(ao *apiObject)
-	visitRefMixinAPIObject(rmao *refMixinAPIObject)
+	visitRefMixinAPIObject(rmao *refMixinAPIObject, parentMixinName *string)
 
 	visitConstructor(c *constructor)
-	visitProperty(p *property)
+	visitProperty(p *property, parentMixinName *string)
 	visitTypeAlias(p *property)
-	visitRefProperty(p *property)
+	visitRefProperty(p *property, parentMixinName *string)
 }
 
 type emitVisitor struct {
@@ -178,7 +178,7 @@ func (e *emitVisitor) visitAPIObject(ao *apiObject) {
 	e.m.bufferWriteLine(&buffer, "},")
 }
 
-func (e *emitVisitor) visitRefMixinAPIObject(rmao *refMixinAPIObject) {
+func (e *emitVisitor) visitRefMixinAPIObject(rmao *refMixinAPIObject, parentMixinName *string) {
 
 	p := rmao.prop
 
@@ -191,13 +191,13 @@ func (e *emitVisitor) visitRefMixinAPIObject(rmao *refMixinAPIObject) {
 	fieldName := jsonnet.RewriteAsFieldKey(p.name)
 	mixinName := fmt.Sprintf("__%sMixin", functionName)
 	var mixinText string
-	if rmao.parentMixinName == "" {
+	if parentMixinName == nil {
 		mixinText = fmt.Sprintf(
 			"local %s(%s) = {%s+: %s},", mixinName, paramName, fieldName, paramName)
 	} else {
 		mixinText = fmt.Sprintf(
 			"local %s(%s) = %s({%s+: %s}),",
-			mixinName, paramName, rmao.parentMixinName, fieldName, paramName)
+			mixinName, paramName, *parentMixinName, fieldName, paramName)
 	}
 
 	if _, ok := rmao.parent.apiObjects[kubespec.ObjectKind(functionName)]; ok {
@@ -209,6 +209,7 @@ func (e *emitVisitor) visitRefMixinAPIObject(rmao *refMixinAPIObject) {
 
 	// NOTE: Comments are emitted by `property#emit`, before we
 	// call this method.
+	buffer.Write(e.buffers[&p.comments].Bytes())
 
 	line := fmt.Sprintf("%s:: {", functionName)
 	e.m.bufferWriteLine(&buffer, line)
@@ -277,79 +278,88 @@ func (e *emitVisitor) visitConstructor(c *constructor) {
 	e.m.bufferWriteLine(&buffer, fmt.Sprintf("%s(%s):: %s,", c.specName, paramsText, bodyText))
 }
 
-func (e *emitVisitor) visitProperty(p *property) {
+func (e *emitVisitor) visitProperty(p *property, parentMixinName *string) {
 
 	buffer := bytes.Buffer{}
 	e.buffers[p] = &buffer
 
-	//paramType := *p.schemaType
+	paramType := *p.schemaType
 
-	////
-	//// Generate both setter and mixin functions for some property. For
-	//// example, we emit both `metadata.setAnnotations({foo: "bar"})`
-	//// (which replaces a set of annotations with given object) and
-	//// `metadata.mixinAnnotations({foo: "bar"})` (which replaces only
-	//// the `foo` key, if it exists.)
-	////
+	k8sVersion := p.root().spec.Info.Version
+	setterFunctionName := jsonnet.RewriteAsIdentifier(k8sVersion, p.name).ToSetterID()
+	paramName := jsonnet.RewriteAsFuncParam(k8sVersion, p.name)
+	fieldName := jsonnet.RewriteAsFieldKey(p.name)
 
-	//var setterBody string
-	//var mixinBody string
-	//emitMixin := false
-	//switch paramType {
-	//case "array":
-	//	emitMixin = true
-	//	if parentMixinName == nil {
-	//		setterBody = fmt.Sprintf(
-	//			"if std.type(%s) == \"array\" then {%s: %s} else {%s: [%s]}",
-	//			paramName, fieldName, paramName, fieldName, paramName,
-	//		)
-	//		mixinBody = fmt.Sprintf(
-	//			"if std.type(%s) == \"array\" then {%s+: %s} else {%s+: [%s]}",
-	//			paramName, fieldName, paramName, fieldName, paramName,
-	//		)
-	//	} else {
-	//		setterBody = fmt.Sprintf(
-	//			"if std.type(%s) == \"array\" then %s({%s: %s}) else %s({%s: [%s]})",
-	//			paramName, *parentMixinName, fieldName, paramName, *parentMixinName,
-	//			fieldName, paramName,
-	//		)
-	//		mixinBody = fmt.Sprintf(
-	//			"if std.type(%s) == \"array\" then %s({%s+: %s}) else %s({%s+: [%s]})",
-	//			paramName, *parentMixinName, fieldName, paramName, *parentMixinName,
-	//			fieldName, paramName,
-	//		)
-	//	}
-	//case "integer", "string", "boolean":
-	//	if parentMixinName == nil {
-	//		setterBody = fmt.Sprintf("{%s: %s}", fieldName, paramName)
-	//	} else {
-	//		setterBody = fmt.Sprintf("%s({%s: %s})", *parentMixinName, fieldName, paramName)
-	//	}
-	//case "object":
-	//	emitMixin = true
-	//	if parentMixinName == nil {
-	//		setterBody = fmt.Sprintf("{%s: %s}", fieldName, paramName)
-	//		mixinBody = fmt.Sprintf("{%s+: %s}", fieldName, paramName)
-	//	} else {
-	//		setterBody = fmt.Sprintf("%s({%s: %s})", *parentMixinName, fieldName, paramName)
-	//		mixinBody = fmt.Sprintf("%s({%s+: %s})", *parentMixinName, fieldName, paramName)
-	//	}
-	//default:
-	//	log.Panicf("Unrecognized type '%s'", paramType)
-	//}
+	//
+	// Generate both setter and mixin functions for some property. For
+	// example, we emit both `metadata.setAnnotations({foo: "bar"})`
+	// (which replaces a set of annotations with given object) and
+	// `metadata.mixinAnnotations({foo: "bar"})` (which replaces only
+	// the `foo` key, if it exists.)
+	//
 
-	////
-	//// Emit.
-	////
+	var setterBody string
+	var mixinBody string
+	emitMixin := false
+	switch paramType {
+	case "array":
+		emitMixin = true
+		if parentMixinName == nil {
+			setterBody = fmt.Sprintf(
+				"if std.type(%s) == \"array\" then {%s: %s} else {%s: [%s]}",
+				paramName, fieldName, paramName, fieldName, paramName,
+			)
+			mixinBody = fmt.Sprintf(
+				"if std.type(%s) == \"array\" then {%s+: %s} else {%s+: [%s]}",
+				paramName, fieldName, paramName, fieldName, paramName,
+			)
+		} else {
+			setterBody = fmt.Sprintf(
+				"if std.type(%s) == \"array\" then %s({%s: %s}) else %s({%s: [%s]})",
+				paramName, *parentMixinName, fieldName, paramName, *parentMixinName,
+				fieldName, paramName,
+			)
+			mixinBody = fmt.Sprintf(
+				"if std.type(%s) == \"array\" then %s({%s+: %s}) else %s({%s+: [%s]})",
+				paramName, *parentMixinName, fieldName, paramName, *parentMixinName,
+				fieldName, paramName,
+			)
+		}
+	case "integer", "string", "boolean":
+		if parentMixinName == nil {
+			setterBody = fmt.Sprintf("{%s: %s}", fieldName, paramName)
+		} else {
+			setterBody = fmt.Sprintf("%s({%s: %s})", *parentMixinName, fieldName, paramName)
+		}
+	case "object":
+		emitMixin = true
+		if parentMixinName == nil {
+			setterBody = fmt.Sprintf("{%s: %s}", fieldName, paramName)
+			mixinBody = fmt.Sprintf("{%s+: %s}", fieldName, paramName)
+		} else {
+			setterBody = fmt.Sprintf("%s({%s: %s})", *parentMixinName, fieldName, paramName)
+			mixinBody = fmt.Sprintf("%s({%s+: %s})", *parentMixinName, fieldName, paramName)
+		}
+	default:
+		log.Panicf("Unrecognized type '%s'", paramType)
+	}
 
-	//line := fmt.Sprintf("%s self + %s,", setterSignature, setterBody)
-	//m.writeLine(line)
+	//
+	// Emit.
+	//
+	buffer.Write(e.buffers[&p.comments].Bytes())
 
-	//if emitMixin {
-	//	// TODO [rod] p.comments.emit(m)
-	//	line = fmt.Sprintf("%s self + %s,", mixinSignature, mixinBody)
-	//	m.writeLine(line)
-	//}
+	setterSignature := fmt.Sprintf("%s(%s)::", setterFunctionName, paramName)
+	line := fmt.Sprintf("%s self + %s,", setterSignature, setterBody)
+	e.m.bufferWriteLine(&buffer, line)
+
+	if emitMixin {
+		buffer.Write(e.buffers[&p.comments].Bytes())
+		mixinFunctionName := jsonnet.RewriteAsIdentifier(k8sVersion, p.name).ToMixinID()
+		mixinSignature := fmt.Sprintf("%s(%s)::", mixinFunctionName, paramName)
+		line = fmt.Sprintf("%s self + %s,", mixinSignature, mixinBody)
+		e.m.bufferWriteLine(&buffer, line)
+	}
 }
 
 func (e *emitVisitor) visitTypeAlias(p *property) {
@@ -398,7 +408,7 @@ func (e *emitVisitor) visitTypeAlias(p *property) {
 	e.m.bufferWriteLine(&buffer, line)
 }
 
-func (e *emitVisitor) visitRefProperty(p *property) {
+func (e *emitVisitor) visitRefProperty(p *property, parentMixinName *string) {
 
 	buffer := bytes.Buffer{}
 	e.buffers[p] = &buffer
@@ -410,13 +420,14 @@ func (e *emitVisitor) visitRefProperty(p *property) {
 	setterSignature := fmt.Sprintf("%s(%s)::", setterFunctionName, paramName)
 
 	var body string
-	if p.parentMixinName == "" {
+	if parentMixinName == nil {
 		body = fmt.Sprintf("{%s: %s}", fieldName, paramName)
 	} else {
-		body = fmt.Sprintf("%s({%s: %s})", p.parentMixinName, fieldName, paramName)
+		body = fmt.Sprintf("%s({%s: %s})", *parentMixinName, fieldName, paramName)
 	}
 	line := fmt.Sprintf("%s %s,", setterSignature, body)
 
+	buffer.Write(e.buffers[&p.comments].Bytes())
 	e.m.bufferWriteLine(&buffer, line)
 }
 
