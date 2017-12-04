@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
@@ -45,13 +44,13 @@ func main() {
 	}
 
 	// Write out.
-	k8sOutfile := fmt.Sprintf("%s/%s", os.Args[2], "k8s.libsonnet")
+	k8sOutfile := filepath.Join(os.Args[2], "k8s.libsonnet")
 	err = ioutil.WriteFile(k8sOutfile, k8sBytes, 0644)
 	if err != nil {
 		log.Fatalf("Could not write `k8s.libsonnet`:\n%v", err)
 	}
 
-	kOutfile := fmt.Sprintf("%s/%s", os.Args[2], "k.libsonnet")
+	kOutfile := filepath.Join(os.Args[2], "k.libsonnet")
 	err = ioutil.WriteFile(kOutfile, kBytes, 0644)
 	if err != nil {
 		log.Fatalf("Could not write `k.libsonnet`:\n%v", err)
