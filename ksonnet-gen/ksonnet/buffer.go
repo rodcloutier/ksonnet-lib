@@ -17,53 +17,44 @@ import (
 // '[' character and `dedent` before the ']' character, while the
 // routine responsible for writing out the function can handle its own
 // indentation independently.
+type indentedLine struct {
+	depth int
+	text  string
+}
+
 type indentWriter struct {
-	depth  int
-	err    error
-	buffer bytes.Buffer
+	depth int
+	lines []indentedLine
 }
 
-func newIndentWriter() *indentWriter {
-	var buffer bytes.Buffer
-	return &indentWriter{
-		depth:  0,
-		err:    nil,
-		buffer: buffer,
+func (i *indentWriter) writeLine(text string) {
+	i.lines = append(i.lines, indentedLine{i.depth, text})
+}
+
+func (i *indentWriter) insert(o indentWriter) {
+	for _, l := range o.lines {
+		i.lines = append(i.lines, indentedLine{l.depth + i.depth, l.text})
 	}
 }
 
-func (m *indentWriter) writeLine(text string) {
-	m.bufferWriteLine(&m.buffer, text)
-}
+func (i *indentWriter) write(buffer *bytes.Buffer) error {
 
-func (m *indentWriter) bufferWriteLine(buffer *bytes.Buffer, text string) {
-	if m.err != nil {
-		return
-	}
-	prefix := strings.Repeat("  ", m.depth)
-	line := fmt.Sprintf("%s%s\n", prefix, text)
-	_, m.err = buffer.WriteString(line)
-}
-
-func (m *indentWriter) write(buffer bytes.Buffer) {
-	if m.err != nil {
-		return
-	}
-	_, m.err = m.buffer.Write(buffer.Bytes())
-}
-
-func (m *indentWriter) bytes() ([]byte, error) {
-	if m.err != nil {
-		return nil, m.err
+	for _, l := range i.lines {
+		prefix := strings.Repeat("  ", l.depth)
+		line := fmt.Sprintf("%s%s\n", prefix, l.text)
+		_, err := buffer.WriteString(line)
+		if err != nil {
+			return err
+		}
 	}
 
-	return m.buffer.Bytes(), nil
+	return nil
 }
 
-func (m *indentWriter) indent() {
-	m.depth++
+func (i *indentWriter) indent() {
+	i.depth++
 }
 
-func (m *indentWriter) dedent() {
-	m.depth--
+func (i *indentWriter) dedent() {
+	i.depth--
 }

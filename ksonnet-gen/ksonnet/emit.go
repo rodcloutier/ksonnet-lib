@@ -16,15 +16,10 @@ import (
 func Emit(spec *kubespec.APISpec, ksonnetLibSHA, k8sSHA *string) ([]byte, []byte, error) {
 	root := newRoot(spec, ksonnetLibSHA, k8sSHA)
 
-	m := newIndentWriter()
-	/*
-		root.emit(m)
-		/*/
-	emitVisitor := newEmitVisitor(m)
+	emitVisitor := newEmitVisitor()
 	root.accept(emitVisitor)
-	//*/
 
-	k8sBytes, err := m.bytes()
+	k8sBytes, err := emitVisitor.write(root)
 	if err != nil {
 		return nil, nil, err
 	}
